@@ -1,43 +1,105 @@
 import express from "express";
-import { Server } from "socket.io";
 import http from "http";
+import cors from "cors";
+import { Server } from "socket.io";
 
 const app = express();
+
+/* ---------------------------------
+   CONFIG
+---------------------------------- */
+const PORT = process.env.PORT || 5173;
+const ALLOWED_ORIGINS = ["https://realspot.ezimone.com"];
+
+/* ---------------------------------
+   MIDDLEWARE
+---------------------------------- */
+app.use(cors({
+  origin: ALLOWED_ORIGINS,
+  credentials: true
+}));
 app.use(express.json());
 
+/* ---------------------------------
+   HTTP SERVER
+---------------------------------- */
 const server = http.createServer(app);
+
+/* ---------------------------------
+   SOCKET.IO
+---------------------------------- */
 const io = new Server(server, {
-  cors: { origin: "*" } // allow all origins for testing
+  cors: {
+    origin: ALLOWED_ORIGINS,
+    credentials: true
+  },
+  transports: ["polling"] // websocket blocked on your host
 });
 
-const adminSockets = new Set();
-
+/* ---------------------------------
+   SOCKET EVENTS
+---------------------------------- */
 io.on("connection", (socket) => {
   console.log("Client connected:", socket.id);
 
-  socket.on("registerAdmin", (data) => {
-    if (data.role === "Admin" || data.role === "General Manager") {
-      adminSockets.add(socket.id);
-      console.log("Admin registered:", socket.id);
+  socket.on("registerAdmin", ({ role }) => {
+    if (role === "Admin") {
+      socket.join("admins");
+      console.log("Admin joined:", socket.id);
+    }
+
+    if (role === "General Manager") {
+      socket.join("gms");
+      console.log("GM joined:", socket.id);
     }
   });
 
   socket.on("disconnect", () => {
-    adminSockets.delete(socket.id);
     console.log("Client disconnected:", socket.id);
   });
 });
 
-app.post("/notifyAdmin", (req, res) => {
-  const data = req.body;
-  console.log("Notify Admin:", data);
+/* ---------------------------------
+   USER LOGIN / LOGOUT NOTIFIER
+---------------------------------- */
+app.post("/user-activity", (req, res) => {
+  const { user, action } = req.body;
 
-  adminSockets.forEach((id) => io.to(id).emit("adminNotification", data));
+  if (!user || !action) {
+    return res.status(400).json({
+      status: "error",
+      message: "user and action are required"
+    });
+  }
 
-  res.json({ status: "ok", sentTo: adminSockets.size });
+  const notification = {
+    title: "User Activity",
+    message: `${user} has ${action}`,
+    time: new Date().toISOString()
+  };
+
+  // Send ONLY to Admin + GM
+  io.to("admins").emit("adminNotification", notification);
+  io.to("gms").emit("adminNotification", notification);
+
+  console.log(`🔔 ${user} ${action}`);
+
+  res.json({ status: "ok" });
 });
 
-const PORT = process.env.PORT || 3000;
+/* ---------------------------------
+   HEALTH CHECK
+---------------------------------- */
+app.get("/health", (req, res) => {
+  res.json({
+    status: "ok",
+    uptime: process.uptime()
+  });
+});
+
+/* ---------------------------------
+   START
+---------------------------------- */
 server.listen(PORT, () => {
-  console.log(`Socket.IO server running on port ${PORT}`);
+  console.log(`✅ Socket server running on port ${PORT}`);
 });
