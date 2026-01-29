@@ -6,6 +6,9 @@ import { Server } from "socket.io";
 const app = express();
 const PORT = process.env.PORT || 5173;
 
+/* ---------------------------------
+   CORS CONFIG
+---------------------------------- */
 const ALLOWED_ORIGINS = ["https://realspot.ezimone.com"];
 
 app.use(cors({
@@ -13,9 +16,14 @@ app.use(cors({
   methods: ["GET", "POST"],
   credentials: true
 }));
+
 app.use(express.json());
 
+/* ---------------------------------
+   HTTP + SOCKET SERVER
+---------------------------------- */
 const server = http.createServer(app);
+
 const io = new Server(server, {
   cors: {
     origin: ALLOWED_ORIGINS,
@@ -25,63 +33,93 @@ const io = new Server(server, {
   transports: ["websocket", "polling"]
 });
 
-// Store Admin/GM sockets
+/* ---------------------------------
+   SOCKET STORES
+---------------------------------- */
+// socket.id => role
 const adminSockets = new Map();
-// Store regular user info
+
+// socket.id => { userId, name }
 const userSockets = new Map();
 
+/* ---------------------------------
+   SOCKET EVENTS
+---------------------------------- */
 io.on("connection", (socket) => {
-  console.log("Client connected:", socket.id);
+  console.log("🔌 Connected:", socket.id);
 
-  // Register Admin or GM
+  /* -------- Admin / GM -------- */
   socket.on("registerAdmin", ({ role }) => {
     if (role === "Admin" || role === "General Manager") {
       adminSockets.set(socket.id, role);
-      console.log(`${role} registered:`, socket.id);
+      console.log(`🛡 ${role} registered:`, socket.id);
     }
   });
 
-  // Register normal user
+  /* -------- Normal User -------- */
   socket.on("registerUser", ({ userId, name }) => {
     userSockets.set(socket.id, { userId, name });
-    console.log(`User registered: ${name} (${socket.id})`);
 
-    // Notify Admins/GM about login
-    adminSockets.forEach((role, adminSocketId) => {
-      io.to(adminSocketId).emit("adminNotification", {
-        title: "User Login",
-        message: `${name} logged in`,
-        user: name,
-        action: "logged in"
-      });
+    console.log(`👤 User logged in: ${name}`);
+
+    notifyAdmins({
+      title: "User Login",
+      message: `${name} logged in`,
+      event: "login",
+      user: name
     });
   });
 
+  /* -------- Disconnect -------- */
   socket.on("disconnect", () => {
+
+    /* Admin / GM disconnect */
     if (adminSockets.has(socket.id)) {
-      console.log(`${adminSockets.get(socket.id)} disconnected:`, socket.id);
+      console.log(`🛡 ${adminSockets.get(socket.id)} disconnected`);
       adminSockets.delete(socket.id);
-    } else if (userSockets.has(socket.id)) {
+      return;
+    }
+
+    /* User disconnect */
+    if (userSockets.has(socket.id)) {
       const user = userSockets.get(socket.id);
-      console.log(`User disconnected: ${user.name} (${socket.id})`);
-      
-      // Notify Admins/GM about logout
-      adminSockets.forEach((role, adminSocketId) => {
-        io.to(adminSocketId).emit("adminNotification", {
-          title: "User Logout",
-          message: `${user.name} logged out`,
-          user: user.name,
-          action: "logged out"
-        });
+      console.log(`👤 User logged out: ${user.name}`);
+
+      notifyAdmins({
+        title: "User Logout",
+        message: `${user.name} logged out`,
+        event: "logout",
+        user: user.name
       });
 
       userSockets.delete(socket.id);
-    } else {
-      console.log("Client disconnected:", socket.id);
+      return;
     }
+
+    console.log("❌ Unknown socket disconnected:", socket.id);
   });
 });
 
+/* ---------------------------------
+   HELPER: NOTIFY ADMINS
+---------------------------------- */
+function notifyAdmins(payload) {
+  adminSockets.forEach((role, adminSocketId) => {
+    io.to(adminSocketId).emit("adminNotification", {
+      ...payload,
+      role,
+      time: new Date().toISOString()
+    });
+  });
+
+  console.log(
+    `📢 Notification sent to ${adminSockets.size} admin(s)`
+  );
+}
+
+/* ---------------------------------
+   START SERVER
+---------------------------------- */
 server.listen(PORT, () => {
   console.log(`✅ Socket.IO server running on port ${PORT}`);
 });
